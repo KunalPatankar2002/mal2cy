@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: mal2cy-sync
+  datasource:
+    url: jdbc:sqlite:./data/mal2cy.db
+    driver-class-name: org.sqlite.JDBC
+  jpa:
+    hibernate:
+      ddl-auto: update
+    database-platform: org.hibernate.community.dialect.SQLiteDialect
+  quartz:
+    job-store-type: memory
+
+app:
+  auth:
+    token-store-path: ./data/auth-tokens.json
+  sync:
+    cron: "0 0 0 * * *"  # Daily at midnight
+    zone: "Asia/Calcutta"
+    timeout-seconds: 300
+    retry-attempts: 3
+    conflict-resolution: last-write-wins  # or mal-bias, crunchyroll-bias
+  crunchyroll:
+    base-url: https://www.crunchyroll.com
+    auth-url: /auth/v1/token
+    watchlist-url: /content/v2/discover/{accountId}/watchlist
+    add-watchlist-url: /content/v2/{accountId}/watchlist
+    remove-watchlist-url: /content/v2/{accountId}/watchlist/{contentId}
+    device-type: Chrome on Chrome OS
+    client-id: bm9haWhkZXZtXzZpeWcwYThsMHE6  # Base64 encoded
+  mal:
+    base-url: https://api.myanimelist.net/v2
+    auth-url: https://myanimelist.net/v1/oauth2/authorize
+    token-url: https://myanimelist.net/v1/oauth2/token
+    redirect-uri: http://localhost:8080/auth/mal/callback
+    client-id: ${MAL_CLIENT_ID:}
+    client-secret: ${MAL_CLIENT_SECRET:}
+  jikan:
+    base-url: https://api.jikan.moe/v4
+  credentials:
+    crunchyroll-device-id: ${CRUNCHYROLL_DEVICE_ID:}
+    crunchyroll-etp-rt: ${CRUNCHYROLL_ETP_RT:}
+    mal-access-token: ${MAL_ACCESS_TOKEN:}
+    mal-refresh-token: ${MAL_REFRESH_TOKEN:}
+
+logging:
+  level:
+    com.mal2cy: DEBUG
+  file:
+    name: ./logs/mal2cy.log
+
+server:
+  port: 8080

@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  mal2cy-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/arm64/v8
+    environment:
+      - MAL_CLIENT_ID=${MAL_CLIENT_ID}
+      - MAL_CLIENT_SECRET=${MAL_CLIENT_SECRET}
+      - CRUNCHYROLL_DEVICE_ID=${CRUNCHYROLL_DEVICE_ID}
+      - CRUNCHYROLL_ETP_RT=${CRUNCHYROLL_ETP_RT}
+      - MAL_ACCESS_TOKEN=${MAL_ACCESS_TOKEN}
+      - MAL_REFRESH_TOKEN=${MAL_REFRESH_TOKEN}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
