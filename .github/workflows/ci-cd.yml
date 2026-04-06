@@ -72,17 +72,37 @@ jobs:
 
   deploy:
     needs: docker
-    if: github.ref == 'refs/heads/main' && secrets.PI_HOST != '' && secrets.PI_USER != '' && secrets.PI_SSH_KEY != '' && secrets.GHCR_USERNAME != '' && secrets.GHCR_TOKEN != ''
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Check deploy configuration
+        id: deploy_check
+        shell: bash
+        env:
+          PI_HOST: ${{ secrets.PI_HOST }}
+          PI_USER: ${{ secrets.PI_USER }}
+          PI_SSH_KEY: ${{ secrets.PI_SSH_KEY }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          PI_APP_PATH: ${{ secrets.PI_APP_PATH }}
+        run: |
+          if [[ -n "$PI_HOST" && -n "$PI_USER" && -n "$PI_SSH_KEY" && -n "$GHCR_USERNAME" && -n "$GHCR_TOKEN" && -n "$PI_APP_PATH" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Deploy secrets are incomplete. Skipping deploy job steps."
+          fi
+
       - name: Compute image name
+        if: steps.deploy_check.outputs.ready == 'true'
         shell: bash
         run: echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}:latest" >> "$GITHUB_ENV"
 
       - name: Copy deploy compose file to Raspberry Pi
+        if: steps.deploy_check.outputs.ready == 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.PI_HOST }}
@@ -92,6 +112,7 @@ jobs:
           target: ${{ secrets.PI_APP_PATH }}
 
       - name: Deploy latest image on Raspberry Pi
+        if: steps.deploy_check.outputs.ready == 'true'
         uses: appleboy/ssh-action@v1.0.3
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
