@@ -28,16 +28,17 @@ This repo includes a GitHub Actions workflow that:
 - runs `mvn test`
 - builds a Linux ARM64 Docker image
 - pushes the image to GHCR
-- optionally deploys it to your Raspberry Pi over SSH
+- deploys it using a self-hosted GitHub Actions runner on your Raspberry Pi
 
 ### Required GitHub Secrets
 
-- `PI_HOST`: Raspberry Pi hostname or IP
-- `PI_USER`: SSH user on the Pi
-- `PI_SSH_KEY`: private SSH key for the Pi
 - `PI_APP_PATH`: absolute deploy path on the Pi, for example `/home/pi/mal2cy`
 - `GHCR_USERNAME`: GitHub username used to read GHCR packages
 - `GHCR_TOKEN`: GitHub token or PAT with `read:packages`
+
+### Raspberry Pi Runner
+
+Set up a self-hosted GitHub Actions runner on the Raspberry Pi for this repository. The deploy job runs directly on the Pi, so no public SSH access or port forwarding is required.
 
 ### Raspberry Pi Files
 
@@ -50,7 +51,7 @@ Put these in the deploy directory on the Pi:
 
 1. Push to `main`.
 2. GitHub Actions tests the project and publishes `ghcr.io/<owner>/<repo>:latest`.
-3. If the deploy secrets are configured, the workflow SSHs into the Pi and runs the Docker deploy.
+3. The self-hosted runner on the Pi pulls the latest image and runs the Docker deploy.
 
 You can also deploy manually on the Pi with:
 
