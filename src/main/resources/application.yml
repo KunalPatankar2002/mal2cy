@@ -32,7 +32,7 @@ app:
     base-url: https://api.myanimelist.net/v2
     auth-url: https://myanimelist.net/v1/oauth2/authorize
     token-url: https://myanimelist.net/v1/oauth2/token
-    redirect-uri: http://localhost:8080/auth/mal/callback
+    redirect-uri: ${MAL_REDIRECT_URI:http://localhost:8080/auth/mal/callback}
     client-id: ${MAL_CLIENT_ID:}
     client-secret: ${MAL_CLIENT_SECRET:}
   jikan:

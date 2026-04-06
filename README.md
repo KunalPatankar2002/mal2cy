@@ -11,7 +11,7 @@ Bidirectional sync between MyAnimeList and Crunchyroll watchlists, optimized for
    - Copy `.env.example` to `.env`
    - Fill in your MAL and Crunchyroll credentials
    - The app will persist refreshed MAL tokens to `./data/auth-tokens.json`
-   - Register the MAL app with redirect URL `http://localhost:8080/auth/mal/callback`
+   - Register the MAL app with the same URL you set in `MAL_REDIRECT_URI`
 
 3. Build and run with Docker:
    ```bash
@@ -21,6 +21,44 @@ Bidirectional sync between MyAnimeList and Crunchyroll watchlists, optimized for
 4. Validate Crunchyroll auth before full sync:
    - Open `http://localhost:8080/auth/crunchyroll/validate`
    - Confirm you get `status: ok`, an `accountId`, and a `watchlistCount`
+
+## GitHub Actions Deployment
+
+This repo includes a GitHub Actions workflow that:
+- runs `mvn test`
+- builds a Linux ARM64 Docker image
+- pushes the image to GHCR
+- optionally deploys it to your Raspberry Pi over SSH
+
+### Required GitHub Secrets
+
+- `PI_HOST`: Raspberry Pi hostname or IP
+- `PI_USER`: SSH user on the Pi
+- `PI_SSH_KEY`: private SSH key for the Pi
+- `PI_APP_PATH`: absolute deploy path on the Pi, for example `/home/pi/mal2cy`
+- `GHCR_USERNAME`: GitHub username used to read GHCR packages
+- `GHCR_TOKEN`: GitHub token or PAT with `read:packages`
+
+### Raspberry Pi Files
+
+Put these in the deploy directory on the Pi:
+- `.env` with your MAL and Crunchyroll values
+- `docker-compose.deploy.yml` copied by the workflow
+- writable `data/` and `logs/` directories
+
+### Deployment Flow
+
+1. Push to `main`.
+2. GitHub Actions tests the project and publishes `ghcr.io/<owner>/<repo>:latest`.
+3. If the deploy secrets are configured, the workflow SSHs into the Pi and runs the Docker deploy.
+
+You can also deploy manually on the Pi with:
+
+```bash
+export MAL2CY_IMAGE=ghcr.io/<owner>/<repo>:latest
+docker compose -f docker-compose.deploy.yml pull
+docker compose -f docker-compose.deploy.yml up -d
+```
 
 ## Running Tests
 
@@ -38,7 +76,7 @@ The current test suite uses mocked network clients so it can run without live MA
 1. Start the app locally.
 2. Open `http://localhost:8080/auth/mal/start` in your browser.
 3. Sign in to MAL and approve the app.
-4. MAL redirects back to `http://localhost:8080/auth/mal/callback`.
+4. MAL redirects back to the URL configured in `MAL_REDIRECT_URI`.
 5. The app exchanges the authorization code and stores the tokens in `./data/auth-tokens.json`.
 
 After that first authorization, the app will refresh MAL tokens automatically.
