@@ -107,6 +107,16 @@ jobs:
           mkdir -p "$PI_APP_PATH/data" "$PI_APP_PATH/logs"
           cp docker-compose.deploy.yml "$PI_APP_PATH/docker-compose.deploy.yml"
 
+      - name: Verify Docker access on self-hosted runner
+        if: steps.deploy_check.outputs.ready == 'true'
+        shell: bash
+        run: |
+          if ! docker info >/dev/null 2>&1; then
+            echo "Self-hosted runner cannot access Docker." >&2
+            echo "Add the runner user to the docker group and restart the runner service." >&2
+            exit 1
+          fi
+
       - name: Deploy latest image on self-hosted runner
         if: steps.deploy_check.outputs.ready == 'true'
         shell: bash

@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   mal2cy-sync:
     image: ${MAL2CY_IMAGE}
