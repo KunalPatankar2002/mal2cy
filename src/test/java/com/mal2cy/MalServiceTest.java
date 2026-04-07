@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -34,7 +35,10 @@ class MalServiceTest {
         AuthTokenStore authTokenStore = mock(AuthTokenStore.class);
         when(client.newCall(org.mockito.ArgumentMatchers.any(Request.class))).thenReturn(call);
         when(call.execute()).thenReturn(successResponse(
-                "{\"data\":[{\"node\":{\"id\":1,\"title\":\"Frieren\"},\"list_status\":{\"status\":\"watching\"}}]}"));
+                "{\"data\":[{\"node\":{\"id\":1,\"title\":\"Frieren\","
+                        + "\"num_episodes\":28,"
+                        + "\"alternative_titles\":{\"en\":\"Frieren: Beyond Journey's End\",\"synonyms\":[\"Sousou no Frieren\"]}},"
+                        + "\"list_status\":{\"status\":\"watching\",\"num_episodes_watched\":12}}]}"));
         when(authTokenStore.loadTokens()).thenReturn(Map.of());
 
         MalService malService = new MalService();
@@ -49,6 +53,10 @@ class MalServiceTest {
         assertEquals("1", animeList.get(0).get("malId"));
         assertEquals("Frieren", animeList.get(0).get("title"));
         assertEquals("watching", animeList.get(0).get("status"));
+        assertEquals(12, animeList.get(0).get("watchedEpisodes"));
+        assertEquals(28, animeList.get(0).get("totalEpisodes"));
+        assertEquals(List.of("Frieren: Beyond Journey's End", "Frieren", "Sousou no Frieren"),
+                animeList.get(0).get("titleCandidates"));
     }
 
     @Test
@@ -83,6 +91,29 @@ class MalServiceTest {
     }
 
     @Test
+    void updateAnimeProgressSendsFormEncodedStatusAndEpisodeCount() throws Exception {
+        OkHttpClient client = mock(OkHttpClient.class);
+        Call call = mock(Call.class);
+        AuthTokenStore authTokenStore = mock(AuthTokenStore.class);
+        when(client.newCall(org.mockito.ArgumentMatchers.any(Request.class))).thenReturn(call);
+        when(call.execute()).thenReturn(successResponse("{}"));
+        when(authTokenStore.loadTokens()).thenReturn(Map.of());
+
+        MalService malService = new MalService();
+        ReflectionTestUtils.setField(malService, "okHttpClient", client);
+        ReflectionTestUtils.setField(malService, "authTokenStore", authTokenStore);
+        ReflectionTestUtils.setField(malService, "baseUrl", "https://api.example.test");
+        ReflectionTestUtils.setField(malService, "accessToken", "token");
+
+        malService.updateAnimeProgress("1", 12, "completed");
+
+        verify(client).newCall(argThat(request -> {
+            String requestBody = readRequestBody(request);
+            return requestBody.contains("status=completed") && requestBody.contains("num_watched_episodes=12");
+        }));
+    }
+
+    @Test
     void getAnimeListRefreshesExpiredMalTokenAndPersistsNewTokens() throws Exception {
         OkHttpClient client = mock(OkHttpClient.class);
         Call call = mock(Call.class);
@@ -92,7 +123,8 @@ class MalServiceTest {
                 .thenReturn(unauthorizedResponse())
                 .thenReturn(successResponse("{\"access_token\":\"new-access\",\"refresh_token\":\"new-refresh\"}"))
                 .thenReturn(successResponse(
-                        "{\"data\":[{\"node\":{\"id\":1,\"title\":\"Frieren\"},\"list_status\":{\"status\":\"watching\"}}]}"));
+                        "{\"data\":[{\"node\":{\"id\":1,\"title\":\"Frieren\",\"num_episodes\":28},"
+                                + "\"list_status\":{\"status\":\"watching\",\"num_episodes_watched\":3}}]}"));
         when(authTokenStore.loadTokens()).thenReturn(Map.of());
 
         MalService malService = new MalService();
@@ -141,5 +173,17 @@ class MalServiceTest {
                 .message("Unauthorized")
                 .body(ResponseBody.create("", okhttp3.MediaType.parse("application/json")))
                 .build();
+    }
+
+    private static String readRequestBody(Request request) {
+        okio.Buffer buffer = new okio.Buffer();
+        try {
+            if (request.body() != null) {
+                request.body().writeTo(buffer);
+            }
+            return buffer.readUtf8();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

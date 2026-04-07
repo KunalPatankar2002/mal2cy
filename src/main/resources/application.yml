@@ -20,13 +20,18 @@ app:
     timeout-seconds: 300
     retry-attempts: 3
     conflict-resolution: last-write-wins  # or mal-bias, crunchyroll-bias
+    watch-history-replay-hours: 48
   crunchyroll:
     base-url: https://www.crunchyroll.com
     auth-url: /auth/v1/token
     watchlist-url: /content/v2/discover/{accountId}/watchlist
+    search-url: /content/v2/discover/search
+    watch-history-url: /content/v2/{accountId}/watch-history
+    watch-history-page-size: 150
     add-watchlist-url: /content/v2/{accountId}/watchlist
     remove-watchlist-url: /content/v2/{accountId}/watchlist/{contentId}
     device-type: Chrome on Chrome OS
+    search-score-threshold: 120
     client-id: bm9haWhkZXZtXzZpeWcwYThsMHE6  # Base64 encoded
   mal:
     base-url: https://api.myanimelist.net/v2

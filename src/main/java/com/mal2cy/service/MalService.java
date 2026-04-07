@@ -3,8 +3,10 @@ package com.mal2cy.service;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -49,8 +51,12 @@ public class MalService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /**
+     * Fetches the authenticated MAL anime list together with title alternatives,
+     * current status, watched episode count, and total episode count.
+     */
     public List<Map<String, Object>> getAnimeList() throws IOException {
-        String url = baseUrl + "/users/@me/animelist?fields=list_status&limit=1000";
+        String url = baseUrl + "/users/@me/animelist?fields=alternative_titles,list_status,num_episodes&limit=1000";
         ensureTokensLoaded();
         Request.Builder builder = new Request.Builder()
                 .url(url)
@@ -64,10 +70,14 @@ public class MalService {
             JsonNode json = objectMapper.readTree(response.body().string());
             List<Map<String, Object>> entries = new ArrayList<>();
             for (JsonNode item : json.get("data")) {
+                JsonNode node = item.get("node");
                 Map<String, Object> entry = new HashMap<>();
-                entry.put("malId", item.get("node").get("id").asText());
-                entry.put("title", item.get("node").get("title").asText());
+                entry.put("malId", node.get("id").asText());
+                entry.put("title", node.get("title").asText());
                 entry.put("status", item.get("list_status").get("status").asText());
+                entry.put("watchedEpisodes", item.get("list_status").path("num_episodes_watched").asInt(0));
+                entry.put("totalEpisodes", node.path("num_episodes").asInt(0));
+                entry.put("titleCandidates", buildTitleCandidates(node));
                 entries.add(entry);
             }
             return entries;
@@ -75,19 +85,32 @@ public class MalService {
     }
 
     public void updateAnimeStatus(String malId, String status) throws IOException {
+        updateAnimeProgress(malId, null, status);
+    }
+
+    /**
+     * Updates MAL watched episode progress and status in a single request.
+     */
+    public void updateAnimeProgress(String malId, Integer watchedEpisodes, String status) throws IOException {
         String url = baseUrl + "/anime/" + malId + "/my_list_status";
-        String jsonBody = "{\"status\":\"" + status + "\"}";
-        RequestBody body = RequestBody.create(jsonBody, MediaType.parse("application/json"));
+        FormBody.Builder bodyBuilder = new FormBody.Builder();
+        if (!isBlank(status)) {
+            bodyBuilder.add("status", status);
+        }
+        if (watchedEpisodes != null) {
+            bodyBuilder.add("num_watched_episodes", String.valueOf(watchedEpisodes));
+        }
+        RequestBody body = bodyBuilder.build();
 
         ensureTokensLoaded();
         Request.Builder builder = new Request.Builder()
                 .url(url)
                 .patch(body)
-                ;
+                .addHeader("Content-Type", "application/x-www-form-urlencoded");
 
         try (Response response = executeAuthorized(builder)) {
             if (!response.isSuccessful()) {
-                throw new IOException("Update MAL status failed: " + response);
+                throw new IOException("Update MAL progress failed: " + response);
             }
         }
     }
@@ -174,5 +197,25 @@ public class MalService {
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private List<String> buildTitleCandidates(JsonNode node) {
+        Set<String> titles = new LinkedHashSet<>();
+        JsonNode alternativeTitles = node.path("alternative_titles");
+
+        addTitleIfPresent(titles, alternativeTitles.path("en").asText(null));
+        addTitleIfPresent(titles, node.path("title").asText(null));
+
+        for (JsonNode synonym : alternativeTitles.path("synonyms")) {
+            addTitleIfPresent(titles, synonym.asText(null));
+        }
+
+        return new ArrayList<>(titles);
+    }
+
+    private void addTitleIfPresent(Set<String> titles, String title) {
+        if (!isBlank(title)) {
+            titles.add(title.trim());
+        }
     }
 }
