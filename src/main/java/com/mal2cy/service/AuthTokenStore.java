@@ -44,11 +44,32 @@ public class AuthTokenStore {
         tokens.put("malAccessToken", accessToken);
         tokens.put("malRefreshToken", refreshToken);
 
+        writeState(tokens);
+    }
+
+    public synchronized String loadValue(String key) {
+        return loadTokens().get(key);
+    }
+
+    public synchronized void saveValue(String key, String value) throws IOException {
+        Map<String, String> state = loadTokens();
+        if (value == null) {
+            state.remove(key);
+        } else {
+            state.put(key, value);
+        }
+
+        writeState(state);
+    }
+
+    private void writeState(Map<String, String> state) throws IOException {
+        Map<String, String> persistedState = new HashMap<>(state);
+
         Path parent = tokenStorePath.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
         }
 
-        objectMapper.writerWithDefaultPrettyPrinter().writeValue(tokenStorePath.toFile(), tokens);
+        objectMapper.writerWithDefaultPrettyPrinter().writeValue(tokenStorePath.toFile(), persistedState);
     }
 }

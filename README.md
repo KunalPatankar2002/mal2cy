@@ -88,6 +88,7 @@ After that first authorization, the app will refresh MAL tokens automatically.
 - Scheduler uses the configured `app.sync.zone` time zone
 - MAL access tokens are refreshed automatically with the configured refresh token
 - Refreshed MAL tokens are stored at the configured `app.auth.token-store-path`
+- Crunchyroll watch-history cursor is stored in the same local state file as `crunchyrollWatchHistoryCursor`
 - MAL one-time authorization starts at `/auth/mal/start`
 - JVM optimized for RPi4: 512MB heap
 - SQLite database for local storage
@@ -96,12 +97,38 @@ After that first authorization, the app will refresh MAL tokens automatically.
 ## API Endpoints
 
 - Crunchyroll: Read/add/remove watchlist
+- Crunchyroll: Read watch history for fully watched episode progress
 - Crunchyroll validation: `/auth/crunchyroll/validate`
-- MAL: Read/update anime list status
+- MAL: Read/update anime list status and watched episode progress
 - Jikan: Fuzzy title matching for MAL IDs
+
+## Watch History Sync
+
+The sync now reads Crunchyroll watch history from:
+
+```text
+GET /content/v2/{accountId}/watch-history?page_size=100&locale=en-US
+```
+
+Trusted fields for MAL progress sync:
+- `fully_watched`
+- `date_played`
+- `panel.episode_metadata.series_id`
+- `panel.episode_metadata.series_title`
+- `panel.episode_metadata.episode_number`
+
+Current behavior:
+- only `fully_watched=true` entries count toward MAL progress
+- entries without an integer `episode_number` are ignored
+- only the first page (`page_size=100`) is read in v1
+- the sync replays a 48-hour overlap window from the stored watch-history cursor to avoid missing delayed writes
+- for each Crunchyroll series, the highest fully watched episode number wins
+- MAL is updated only when Crunchyroll advances beyond MAL's current watched episode count
+- MAL status is set to `watching`, or `completed` when the watched count reaches the MAL total episode count
+
+The application logs accepted watch-history items, skipped regressions, missing mappings, truncation warnings, and cursor advancement in `./logs/mal2cy.log`.
 
 ## Future Features
 
-- Watch history sync
 - Custom list support
 - Web UI for manual sync
