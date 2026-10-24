@@ -72,6 +72,16 @@ mvn test
 Tests are located in `src/test/java/com/mal2cy/` and cover authentication, watchlist fetch, and sync logic for both Crunchyroll and MAL.
 The current test suite uses mocked network clients so it can run without live MAL/Crunchyroll credentials.
 
+## One Time Crunchyroll Activation
+
+So the `etp_rt` cookie never has to be copied by hand again:
+
+1. Open `http://<pi-address>:8080/auth/crunchyroll/activate`. It returns a short `code`.
+2. Within 5 minutes, enter that code at https://www.crunchyroll.com/activate (like setting up a smart TV).
+3. Check `http://<pi-address>:8080/auth/crunchyroll/activate/status` shows `activated`.
+
+The app then logs in like Crunchyroll's Android TV app, saving `crunchyrollTvRefreshToken` and `crunchyrollTvDeviceId` in `./data/auth-tokens.json` and renewing the login on every sync. If that login ever fails, the app logs an error and falls back to `CRUNCHYROLL_ETP_RT`. The TV client id is unofficial; if Crunchyroll retires it, set `CRUNCHYROLL_TV_CLIENT_AUTH` (and optionally `CRUNCHYROLL_TV_USER_AGENT`) to a current one.
+
 ## One Time MAL Setup
 
 1. Start the app locally.
@@ -89,7 +99,7 @@ After that first authorization, the app will refresh MAL tokens automatically.
 - MAL access tokens are refreshed automatically with the configured refresh token
 - Refreshed MAL tokens are stored at the configured `app.auth.token-store-path`
 - Crunchyroll watch-history cursor is stored in the same local state file as `crunchyrollWatchHistoryCursor`
-- If Crunchyroll rotates the `etp_rt` cookie during login, the new value is saved in the same file as `crunchyrollEtpRt` and tried before `CRUNCHYROLL_ETP_RT`. Crunchyroll's web client does not support refresh-token logins, so when the cookie expires a fresh `etp_rt` must be copied into `.env`
+- Crunchyroll logins use the activated TV login when present (see One Time Crunchyroll Activation). Otherwise they use the `etp_rt` cookie: a rotated cookie saved as `crunchyrollEtpRt` first, then `CRUNCHYROLL_ETP_RT`. The web client can't renew itself, so without activation an expired cookie has to be copied into `.env` again
 - Sync failures are logged to `./logs/mal2cy.log` with their stack trace, and a failed lookup for one title is skipped instead of aborting the whole run
 - MAL one-time authorization starts at `/auth/mal/start`
 - JVM optimized for RPi4: 512MB heap

@@ -83,17 +83,34 @@ public class CrunchyrollService {
     @Autowired
     private AuthTokenStore authTokenStore;
 
+    @Autowired
+    private CrunchyrollTvAuthService tvAuthService;
+
     private static final String ETP_RT_KEY = "crunchyrollEtpRt";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
-     * Logs in to Crunchyroll with the last rotated etp_rt cookie, falling back to the
-     * etp_rt cookie from configuration. The web client id does not support the
-     * refresh_token grant (Crunchyroll answers unsupported_grant_type), so the cookie
-     * is the only long-lived credential; any rotated cookie Crunchyroll sends is saved.
+     * Logs in to Crunchyroll. Once the TV-style activation has been done, its saved
+     * refresh token is used and renewed. Otherwise (or if that fails) it falls back to
+     * the last rotated etp_rt cookie and then the etp_rt cookie from configuration. The
+     * web client id does not support the refresh_token grant, so the cookie alone
+     * cannot renew itself.
      */
     public void authenticate() throws IOException {
+        if (tvAuthService != null && tvAuthService.isActivated()) {
+            try {
+                CrunchyrollTvAuthService.TokenResult result = tvAuthService.refresh();
+                accessToken = result.accessToken();
+                accountId = result.accountId();
+                log.info("Crunchyroll login succeeded using the activated TV login");
+                return;
+            } catch (IOException e) {
+                log.error("Crunchyroll TV login failed, falling back to etp_rt cookie. Re-activate at /auth/crunchyroll/activate: {}",
+                        e.getMessage());
+            }
+        }
+
         String storedEtpRt = loadStoredValue(ETP_RT_KEY);
         IOException lastFailure = null;
         for (String cookie : new LinkedHashSet<>(Arrays.asList(storedEtpRt, etpRt))) {
