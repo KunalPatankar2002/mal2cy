@@ -140,6 +140,24 @@ Current behavior:
 
 The application logs accepted watch-history items, skipped regressions, missing mappings, truncation warnings, and cursor advancement in `./logs/mal2cy.log`.
 
+## Notifications
+
+Set `NTFY_TOPIC` in `.env` to a hard-to-guess name and subscribe to the same topic in the [ntfy](https://ntfy.sh) phone app. You get a notification when:
+- a sync fails (with the error)
+- the activated Crunchyroll TV login is rejected and needs re-activating
+- a sync changed something or had per-title errors (a one-line summary)
+
+## Title Matching
+
+- Crunchyroll watchlist titles are matched against your own MAL list first (main, English and alternative titles). Jikan is only a fallback: it is throttled to about one request a second, retried on HTTP 429, and a result is only accepted when one of its titles matches.
+- MAL sequels ("2nd Season", "Season 3", "Part 2", "II", "...-hen" arcs) map to the parent Crunchyroll series, since Crunchyroll keeps every season under one series. When several MAL seasons share a series, watch history goes to the season that is `watching` on MAL. A Crunchyroll episode number above the MAL episode count is skipped.
+- Titles with no match are remembered in `./data/match-misses.json` and searched again after 7 days (`app.match.retry-days`).
+- Hand-written matches go in `./data/title-overrides.json` (created empty on first run):
+  ```json
+  { "malToCrunchyroll": { "41025": "GG5H5XMWV" }, "crunchyrollToMal": { "GT00371893": "38668" } }
+  ```
+- `GET /sync/report` lists matched and unmatched titles and the last sync result. `POST /sync/run` runs a sync now. Set `APP_SYNC_DRY_RUN=true` to log what a sync would write without changing MAL or Crunchyroll.
+
 ## Future Features
 
 - Custom list support

@@ -86,6 +86,9 @@ public class CrunchyrollService {
     @Autowired
     private CrunchyrollTvAuthService tvAuthService;
 
+    @Autowired
+    private NotificationService notificationService;
+
     private static final String ETP_RT_KEY = "crunchyrollEtpRt";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -108,6 +111,11 @@ public class CrunchyrollService {
             } catch (IOException e) {
                 log.error("Crunchyroll TV login failed, falling back to etp_rt cookie. Re-activate at /auth/crunchyroll/activate: {}",
                         e.getMessage());
+                if (notificationService != null) {
+                    notificationService.notifyFailure("mal2cy: Crunchyroll login needs re-activation",
+                            "The saved TV login was rejected (" + e.getMessage()
+                                    + "). Open /auth/crunchyroll/activate on the Pi and enter the code at crunchyroll.com/activate.");
+                }
             }
         }
 

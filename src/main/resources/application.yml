@@ -48,6 +48,14 @@ app:
     client-secret: ${MAL_CLIENT_SECRET:}
   jikan:
     base-url: https://api.jikan.moe/v4
+    min-interval-millis: 1100
+  match:
+    misses-path: ./data/match-misses.json
+    overrides-path: ./data/title-overrides.json
+    retry-days: 7
+  notify:
+    ntfy-url: ${NTFY_URL:https://ntfy.sh}
+    ntfy-topic: ${NTFY_TOPIC:}
   credentials:
     crunchyroll-device-id: ${CRUNCHYROLL_DEVICE_ID:}
     crunchyroll-etp-rt: ${CRUNCHYROLL_ETP_RT:}
