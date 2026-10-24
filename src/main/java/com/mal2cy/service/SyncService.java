@@ -3,6 +3,7 @@ package com.mal2cy.service;
 import java.time.LocalDateTime;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -46,15 +47,29 @@ public class SyncService {
     @Autowired
     private AuthTokenStore authTokenStore;
 
+    @Autowired
+    private MatchStore matchStore;
+
+    @Autowired
+    private NotificationService notificationService;
+
     @Value("${app.sync.conflict-resolution}")
     private String conflictResolution;
 
     @Value("${app.sync.watch-history-replay-hours:48}")
     private long watchHistoryReplayHours;
 
-    private static final String WATCH_HISTORY_CURSOR_KEY = "crunchyrollWatchHistoryCursor";
+    // Logs what would be written to MAL / Crunchyroll instead of writing it.
+    @Value("${app.sync.dry-run:false}")
+    private boolean dryRun;
 
-    public void performSync() {
+    private static final String WATCH_HISTORY_CURSOR_KEY = "crunchyrollWatchHistoryCursor";
+    private static final String AMBIGUOUS = "";
+
+    private final Map<String, Integer> runCounts = new HashMap<>();
+
+    public synchronized void performSync() {
+        runCounts.clear();
         try {
             mergeDuplicateEntries();
 
@@ -84,6 +99,8 @@ public class SyncService {
                     .filter(id -> id != null && !id.isBlank())
                     .collect(Collectors.toSet());
 
+            Map<String, String> malIdsByTitle = buildMalTitleIndex(malList);
+
             // Convert to unified format, keyed by MAL id when known so both sides merge into one entry
             Map<String, AnimeEntry> unifiedMap = new HashMap<>();
 
@@ -95,6 +112,16 @@ public class SyncService {
                 AnimeEntry entry = animeEntryRepository.findByCrunchyrollId(crId);
                 String malId = entry != null ? entry.getMalId() : null;
                 if (malId == null) {
+                    malId = matchStore.malIdOverride(crId);
+                }
+                if (malId == null) {
+                    malId = findInMalList(title, malIdsByTitle);
+                    if (malId != null) {
+                        log.info("Matched Crunchyroll watchlist title='{}' to MAL list entry malId={}", title, malId);
+                    }
+                }
+                String missKey = "cr:" + crId;
+                if (malId == null && !matchStore.recentlyMissed(missKey)) {
                     try {
                         malId = malService.findMalIdByTitle(title);
                     } catch (Exception e) {
@@ -103,16 +130,21 @@ public class SyncService {
                         logSyncResult("match", "mal", title, "failed", e.getMessage());
                         continue;
                     }
+                    if (malId == null) {
+                        matchStore.recordMiss(missKey);
+                        log.info("No MAL match found for Crunchyroll watchlist title='{}' content_id={}", title, crId);
+                        logSyncResult(
+                                "match",
+                                "mal",
+                                title,
+                                "missing",
+                                "Present in Crunchyroll watchlist but no MAL match was found.");
+                    }
+                } else if (malId == null) {
+                    log.debug("Skipping MAL lookup for title='{}' content_id={} because it had no match recently", title, crId);
                 }
-
-                if (malId == null) {
-                    log.info("No MAL match found for Crunchyroll watchlist title='{}' content_id={}", title, crId);
-                    logSyncResult(
-                            "match",
-                            "mal",
-                            title,
-                            "missing",
-                            "Present in Crunchyroll watchlist but no MAL match was found.");
+                if (malId != null) {
+                    matchStore.clearMiss(missKey);
                 }
 
                 if (entry == null && malId != null) {
@@ -160,20 +192,30 @@ public class SyncService {
                 }
 
                 if (entry.getCrunchyrollId() == null) {
+                    entry.setCrunchyrollId(matchStore.crunchyrollIdOverride(malId));
+                }
+                String missKey = "mal:" + malId;
+                if (entry.getCrunchyrollId() == null && matchStore.recentlyMissed(missKey)) {
+                    log.debug("Skipping Crunchyroll search for malId={} title='{}' because it had no match recently", malId, title);
+                } else if (entry.getCrunchyrollId() == null) {
+                    boolean searchFailed = false;
                     try {
-                        entry.setCrunchyrollId(crunchyrollService.findSeriesIdByTitles(titleCandidates));
+                        entry.setCrunchyrollId(findCrunchyrollId(malId, titleCandidates));
                     } catch (Exception e) {
+                        searchFailed = true;
                         log.warn("Crunchyroll search failed for MAL entry malId={} title='{}': {}",
                                 malId, title, e.getMessage());
                         logSyncResult("match", "crunchyroll", title, "failed", e.getMessage());
                     }
                     if (entry.getCrunchyrollId() != null) {
+                        matchStore.clearMiss(missKey);
                         log.info(
                                 "Resolved Crunchyroll content_id={} for MAL entry malId={} title='{}'",
                                 entry.getCrunchyrollId(),
                                 malId,
                                 title);
-                    } else {
+                    } else if (!searchFailed) {
+                        matchStore.recordMiss(missKey);
                         log.info("No Crunchyroll content_id resolved for MAL entry malId={} title='{}'", malId, title);
                         logSyncResult(
                                 "match",
@@ -198,12 +240,96 @@ public class SyncService {
 
             // Log success
             logSyncResult("sync", "both", "All", "success", null);
-            log.info("Sync finished successfully");
+            String summary = buildSummary();
+            log.info("Sync finished successfully: {}", summary);
+            if (count("add", "success") + count("update", "success") + count("progress_update", "success")
+                    + failedTitleCount() > 0) {
+                notificationService.notifyInfo("mal2cy sync finished", summary);
+            }
 
         } catch (Exception e) {
             log.error("Sync failed: {}", e.getMessage(), e);
             logSyncResult("sync", "both", "All", "failed", e.getMessage());
+            notificationService.notifyFailure("mal2cy sync failed", String.valueOf(e.getMessage()));
         }
+    }
+
+    private String buildSummary() {
+        return String.format(
+                "%d MAL progress updates, %d added to MAL, %d added to Crunchyroll, %d unmatched, %d per-title errors",
+                count("progress_update", "success"),
+                count("update", "success"),
+                count("add", "success"),
+                count("match", "missing"),
+                failedTitleCount());
+    }
+
+    private int count(String operation, String status) {
+        return runCounts.getOrDefault(operation + "/" + status, 0);
+    }
+
+    private int failedTitleCount() {
+        return runCounts.entrySet().stream()
+                .filter(e -> e.getKey().endsWith("/failed") && !e.getKey().startsWith("sync/"))
+                .mapToInt(Map.Entry::getValue)
+                .sum();
+    }
+
+    /**
+     * Index of normalized MAL list titles (main, English, synonyms) to MAL ids. Titles
+     * shared by different MAL entries are marked ambiguous and never matched.
+     */
+    private Map<String, String> buildMalTitleIndex(List<Map<String, Object>> malList) {
+        Map<String, String> index = new HashMap<>();
+        for (Map<String, Object> item : malList) {
+            String malId = (String) item.get("malId");
+            if (malId == null) {
+                continue;
+            }
+            for (String candidate : extractTitleCandidates(item, (String) item.get("title"))) {
+                String key = TitleMatcher.normalize(candidate);
+                if (key.isEmpty()) {
+                    continue;
+                }
+                String existing = index.putIfAbsent(key, malId);
+                if (existing != null && !existing.equals(malId)) {
+                    index.put(key, AMBIGUOUS);
+                }
+            }
+        }
+        return index;
+    }
+
+    private String findInMalList(String title, Map<String, String> malIdsByTitle) {
+        String malId = malIdsByTitle.get(TitleMatcher.normalize(title));
+        return malId == null || malId.equals(AMBIGUOUS) ? null : malId;
+    }
+
+    /**
+     * Searches Crunchyroll with the MAL titles, then with the season/sequel suffix
+     * removed. Crunchyroll keeps every season under one series, so "Dandadan 2nd
+     * Season" maps to the "Dandadan" series.
+     */
+    private String findCrunchyrollId(String malId, List<String> titleCandidates) throws IOException {
+        String crId = crunchyrollService.findSeriesIdByTitles(titleCandidates);
+        if (crId != null) {
+            return crId;
+        }
+
+        List<String> parentTitles = titleCandidates.stream()
+                .map(TitleMatcher::stripSeasonSuffix)
+                .filter(t -> t != null && !t.isBlank())
+                .distinct()
+                .toList();
+        if (parentTitles.isEmpty()) {
+            return null;
+        }
+        crId = crunchyrollService.findSeriesIdByTitles(parentTitles);
+        if (crId != null) {
+            log.info("Mapped sequel malId={} to parent Crunchyroll series content_id={} using titles={}",
+                    malId, crId, parentTitles);
+        }
+        return crId;
     }
 
     private String unifiedKey(AnimeEntry entry) {
@@ -306,6 +432,11 @@ public class SyncService {
             }
 
             log.info("Adding title='{}' to Crunchyroll watchlist with content_id={}", entry.getTitle(), entry.getCrunchyrollId());
+            if (dryRun) {
+                log.info("DRY RUN: would add title='{}' content_id={} to the Crunchyroll watchlist", entry.getTitle(), entry.getCrunchyrollId());
+                crunchyrollWatchlistIds.add(entry.getCrunchyrollId());
+                return;
+            }
             crunchyrollService.addToWatchlist(entry.getCrunchyrollId());
             crunchyrollWatchlistIds.add(entry.getCrunchyrollId());
             logSyncResult("add", "crunchyroll", entry.getTitle(), "success", null);
@@ -325,6 +456,10 @@ public class SyncService {
             // Entries already on the MAL list carry MAL's own status; pushing it back is at best a
             // no-op and at worst overwrites e.g. "completed" with Crunchyroll's default "watching".
             if (entry.getMalId() != null && !malListIds.contains(entry.getMalId())) {
+                if (dryRun) {
+                    log.info("DRY RUN: would add malId={} title='{}' to MAL as {}", entry.getMalId(), entry.getTitle(), entry.getStatus());
+                    return;
+                }
                 malService.updateAnimeStatus(entry.getMalId(), entry.getStatus());
                 logSyncResult("update", "mal", entry.getTitle(), "success", null);
             }
@@ -376,7 +511,7 @@ public class SyncService {
             }
         }
 
-        if (maxProcessedDate != null) {
+        if (maxProcessedDate != null && !dryRun) {
             authTokenStore.saveValue(WATCH_HISTORY_CURSOR_KEY, maxProcessedDate.toString());
             log.info("Advanced Crunchyroll watch history cursor to {}", maxProcessedDate);
         }
@@ -384,7 +519,10 @@ public class SyncService {
 
     private void processWatchHistoryCandidate(WatchHistoryCandidate candidate, Map<String, MalProgressState> malProgressById)
             throws Exception {
-        AnimeEntry mappingEntry = animeEntryRepository.findByCrunchyrollId(candidate.seriesId());
+        AnimeEntry mappingEntry = resolveHistoryMapping(candidate, malProgressById);
+        if (mappingEntry == AMBIGUOUS_MAPPING) {
+            return;
+        }
         String malId = mappingEntry != null ? mappingEntry.getMalId() : null;
 
         if (malId == null) {
@@ -424,10 +562,24 @@ public class SyncService {
             return;
         }
 
+        if (currentState.totalEpisodes() > 0 && candidate.episodeNumber() > currentState.totalEpisodes()) {
+            log.info(
+                    "Skipping MAL progress update for malId={} title='{}' because Crunchyroll episode {} is beyond the MAL episode count {} (likely absolute numbering)",
+                    malId, candidate.seriesTitle(), candidate.episodeNumber(), currentState.totalEpisodes());
+            logSyncResult("progress_update", "mal", candidate.seriesTitle(), "skipped",
+                    "Crunchyroll episode number is beyond the MAL episode count.");
+            return;
+        }
+
         String targetStatus = determineStatus(candidate.episodeNumber(), currentState.totalEpisodes());
         log.info(
                 "Updating MAL progress for malId={} title='{}' to watchedEpisodes={} status={}",
                 malId, candidate.seriesTitle(), candidate.episodeNumber(), targetStatus);
+        if (dryRun) {
+            log.info("DRY RUN: would set MAL malId={} title='{}' to watchedEpisodes={} status={}",
+                    malId, candidate.seriesTitle(), candidate.episodeNumber(), targetStatus);
+            return;
+        }
         malService.updateAnimeProgress(malId, candidate.episodeNumber(), targetStatus);
         logSyncResult("progress_update", "mal", candidate.seriesTitle(), "success", null);
 
@@ -435,6 +587,38 @@ public class SyncService {
                 malId,
                 new MalProgressState(malId, candidate.seriesTitle(), candidate.episodeNumber(), currentState.totalEpisodes(), targetStatus));
         persistCrunchyrollMalMapping(mappingEntry, malId, candidate, targetStatus);
+    }
+
+    private static final AnimeEntry AMBIGUOUS_MAPPING = new AnimeEntry();
+
+    /**
+     * Finds the MAL entry a Crunchyroll series' history belongs to. When several MAL
+     * seasons share the Crunchyroll series, the one currently "watching" on MAL wins;
+     * if that is not exactly one, the update is skipped rather than guessed.
+     */
+    private AnimeEntry resolveHistoryMapping(WatchHistoryCandidate candidate, Map<String, MalProgressState> malProgressById) {
+        List<AnimeEntry> mappings = animeEntryRepository.findAllByCrunchyrollIdOrderByIdAsc(candidate.seriesId()).stream()
+                .filter(e -> e.getMalId() != null)
+                .toList();
+        if (mappings.size() <= 1) {
+            return mappings.isEmpty() ? animeEntryRepository.findByCrunchyrollId(candidate.seriesId()) : mappings.get(0);
+        }
+
+        List<AnimeEntry> watching = mappings.stream()
+                .filter(e -> {
+                    MalProgressState state = malProgressById.get(e.getMalId());
+                    return state != null && "watching".equals(state.status());
+                })
+                .toList();
+        if (watching.size() == 1) {
+            return watching.get(0);
+        }
+
+        log.info("Skipping MAL progress update for Crunchyroll series_id={} title='{}' because it maps to {} MAL entries and {} are being watched",
+                candidate.seriesId(), candidate.seriesTitle(), mappings.size(), watching.size());
+        logSyncResult("progress_update", "mal", candidate.seriesTitle(), "skipped",
+                "Crunchyroll series maps to several MAL seasons; could not tell which one is being watched.");
+        return AMBIGUOUS_MAPPING;
     }
 
     private void persistCrunchyrollMalMapping(AnimeEntry mappingEntry, String malId, WatchHistoryCandidate candidate, String status) {
@@ -512,6 +696,7 @@ public class SyncService {
     }
 
     private void logSyncResult(String operation, String platform, String title, String status, String error) {
+        runCounts.merge(operation + "/" + status, 1, Integer::sum);
         SyncResult result = new SyncResult();
         result.setSyncTime(LocalDateTime.now());
         result.setOperation(operation);

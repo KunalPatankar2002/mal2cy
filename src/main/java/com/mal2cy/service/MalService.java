@@ -11,11 +11,14 @@ import java.util.Set;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import okhttp3.FormBody;
+import okhttp3.HttpUrl;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -48,6 +51,17 @@ public class MalService {
 
     @Autowired
     private AuthTokenStore authTokenStore;
+
+    @Value("${app.jikan.base-url:https://api.jikan.moe/v4}")
+    private String jikanBaseUrl = "https://api.jikan.moe/v4";
+
+    @Value("${app.jikan.min-interval-millis:1100}")
+    private long jikanMinIntervalMillis = 1100;
+
+    private static final int JIKAN_MAX_ATTEMPTS = 3;
+    private static final Logger log = LoggerFactory.getLogger(MalService.class);
+
+    private long lastJikanRequestMillis;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -115,23 +129,79 @@ public class MalService {
         }
     }
 
+    /**
+     * Looks a title up on Jikan and returns the MAL id of a result whose main, English
+     * or alternative title matches it. Requests are spaced out to stay under Jikan's
+     * rate limit and retried on 429, so a throttled lookup is not mistaken for a miss.
+     */
     public String findMalIdByTitle(String title) throws IOException {
-        // Use Jikan for fuzzy matching
-        String jikanUrl = "https://api.jikan.moe/v4/anime?q=" + title.replace(" ", "%20") + "&limit=1";
-        Request request = new Request.Builder()
-                .url(jikanUrl)
-                .get()
+        if (isBlank(title)) {
+            return null;
+        }
+
+        HttpUrl url = HttpUrl.parse(jikanBaseUrl + "/anime").newBuilder()
+                .addQueryParameter("q", title)
+                .addQueryParameter("limit", "5")
                 .build();
+        String wanted = TitleMatcher.normalize(title);
 
-        try (Response response = okHttpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) return null;
+        for (int attempt = 1; attempt <= JIKAN_MAX_ATTEMPTS; attempt++) {
+            waitForJikanSlot();
+            try (Response response = okHttpClient.newCall(new Request.Builder().url(url).get().build()).execute()) {
+                if (response.code() == 429 || response.code() >= 500) {
+                    log.warn("Jikan lookup for title='{}' returned HTTP {} (attempt {}/{})",
+                            title, response.code(), attempt, JIKAN_MAX_ATTEMPTS);
+                    sleep(jikanMinIntervalMillis * attempt * 2);
+                    continue;
+                }
+                if (!response.isSuccessful()) {
+                    log.warn("Jikan lookup for title='{}' failed with HTTP {}", title, response.code());
+                    return null;
+                }
 
-            JsonNode json = objectMapper.readTree(response.body().string());
-            if (json.get("data").size() > 0) {
-                return json.get("data").get(0).get("mal_id").asText();
+                JsonNode data = objectMapper.readTree(response.body().string()).path("data");
+                for (JsonNode anime : data) {
+                    if (jikanTitles(anime).stream().map(TitleMatcher::normalize).anyMatch(wanted::equals)) {
+                        return anime.path("mal_id").asText(null);
+                    }
+                }
+                log.info("Jikan returned {} result(s) for title='{}' but none had a matching title", data.size(), title);
+                return null;
             }
         }
+
+        log.warn("Jikan lookup for title='{}' gave up after {} attempts", title, JIKAN_MAX_ATTEMPTS);
         return null;
+    }
+
+    private List<String> jikanTitles(JsonNode anime) {
+        List<String> titles = new ArrayList<>();
+        titles.add(anime.path("title").asText(""));
+        titles.add(anime.path("title_english").asText(""));
+        titles.add(anime.path("title_japanese").asText(""));
+        for (JsonNode synonym : anime.path("title_synonyms")) {
+            titles.add(synonym.asText(""));
+        }
+        for (JsonNode alternative : anime.path("titles")) {
+            titles.add(alternative.path("title").asText(""));
+        }
+        return titles;
+    }
+
+    private synchronized void waitForJikanSlot() {
+        long waitMillis = lastJikanRequestMillis + jikanMinIntervalMillis - System.currentTimeMillis();
+        if (waitMillis > 0) {
+            sleep(waitMillis);
+        }
+        lastJikanRequestMillis = System.currentTimeMillis();
+    }
+
+    private void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private Response executeAuthorized(Request.Builder builder) throws IOException {

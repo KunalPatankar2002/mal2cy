@@ -68,6 +68,7 @@ class MalServiceTest {
 
         MalService malService = new MalService();
         ReflectionTestUtils.setField(malService, "okHttpClient", client);
+        ReflectionTestUtils.setField(malService, "jikanMinIntervalMillis", 1L);
 
         assertNull(malService.findMalIdByTitle("Unknown"));
     }

@@ -146,6 +146,8 @@ class SyncServiceRobustnessTest {
         ReflectionTestUtils.setField(syncService, "syncResultRepository", syncResultRepository);
         ReflectionTestUtils.setField(syncService, "crunchyrollMetadataService", mock(CrunchyrollMetadataService.class));
         ReflectionTestUtils.setField(syncService, "authTokenStore", authTokenStore);
+        ReflectionTestUtils.setField(syncService, "matchStore", mock(com.mal2cy.service.MatchStore.class));
+        ReflectionTestUtils.setField(syncService, "notificationService", mock(com.mal2cy.service.NotificationService.class));
         ReflectionTestUtils.setField(syncService, "conflictResolution", "last-write-wins");
         ReflectionTestUtils.setField(syncService, "watchHistoryReplayHours", 48L);
         return syncService;
