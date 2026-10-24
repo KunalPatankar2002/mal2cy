@@ -72,8 +72,8 @@ class SyncServiceTest {
 
         verify(crunchyrollService).addToWatchlist("cr-2");
         verify(malService).updateAnimeStatus("mal-1", "watching");
-        verify(malService).updateAnimeStatus("mal-2", "watching");
-        verify(syncResultRepository, times(4)).save(any(SyncResult.class));
+        verify(malService, never()).updateAnimeStatus(eq("mal-2"), anyString());
+        verify(syncResultRepository, times(3)).save(any(SyncResult.class));
     }
 
     @Test

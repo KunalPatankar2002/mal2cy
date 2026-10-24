@@ -89,6 +89,8 @@ After that first authorization, the app will refresh MAL tokens automatically.
 - MAL access tokens are refreshed automatically with the configured refresh token
 - Refreshed MAL tokens are stored at the configured `app.auth.token-store-path`
 - Crunchyroll watch-history cursor is stored in the same local state file as `crunchyrollWatchHistoryCursor`
+- Crunchyroll login state is saved in the same file (`crunchyrollRefreshToken`, plus `crunchyrollEtpRt` when Crunchyroll rotates the cookie). Logins try the saved refresh token first, then the saved cookie, then `CRUNCHYROLL_ETP_RT`, so the `.env` cookie is only needed for the first login or after all saved state has expired
+- Sync failures are logged to `./logs/mal2cy.log` with their stack trace, and a failed lookup for one title is skipped instead of aborting the whole run
 - MAL one-time authorization starts at `/auth/mal/start`
 - JVM optimized for RPi4: 512MB heap
 - SQLite database for local storage
