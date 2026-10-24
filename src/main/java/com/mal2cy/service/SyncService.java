@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,6 +56,8 @@ public class SyncService {
 
     public void performSync() {
         try {
+            mergeDuplicateEntries();
+
             // Fetch data from both platforms
             List<Map<String, Object>> crunchyrollList = crunchyrollService.getWatchlist();
             List<Map<String, Object>> malList = malService.getAnimeList();
@@ -67,7 +70,7 @@ public class SyncService {
                     var metadata = crunchyrollMetadataService.getSeriesMetadata(accessToken, crId);
                     item.put("metadata", metadata);
                 } catch (Exception e) {
-                    // Log or handle metadata fetch failure
+                    log.debug("Crunchyroll metadata fetch failed for content_id={}: {}", crId, e.getMessage());
                 }
             }
 
@@ -76,14 +79,32 @@ public class SyncService {
                     .filter(id -> id != null && !id.isBlank())
                     .collect(Collectors.toSet());
 
-            // Convert to unified format
+            Set<String> malListIds = malList.stream()
+                    .map(item -> (String) item.get("malId"))
+                    .filter(id -> id != null && !id.isBlank())
+                    .collect(Collectors.toSet());
+
+            // Convert to unified format, keyed by MAL id when known so both sides merge into one entry
             Map<String, AnimeEntry> unifiedMap = new HashMap<>();
 
             // Process Crunchyroll
             for (Map<String, Object> item : crunchyrollList) {
                 String crId = (String) item.get("seriesId");
                 String title = (String) item.get("title");
-                String malId = malService.findMalIdByTitle(title);
+
+                AnimeEntry entry = animeEntryRepository.findByCrunchyrollId(crId);
+                String malId = entry != null ? entry.getMalId() : null;
+                if (malId == null) {
+                    try {
+                        malId = malService.findMalIdByTitle(title);
+                    } catch (Exception e) {
+                        log.warn("MAL lookup failed for Crunchyroll watchlist title='{}' content_id={}: {}",
+                                title, crId, e.getMessage());
+                        logSyncResult("match", "mal", title, "failed", e.getMessage());
+                        continue;
+                    }
+                }
+
                 if (malId == null) {
                     log.info("No MAL match found for Crunchyroll watchlist title='{}' content_id={}", title, crId);
                     logSyncResult(
@@ -94,14 +115,21 @@ public class SyncService {
                             "Present in Crunchyroll watchlist but no MAL match was found.");
                 }
 
-                AnimeEntry entry = new AnimeEntry();
-                entry.setTitle(title);
+                if (entry == null && malId != null) {
+                    entry = animeEntryRepository.findByMalId(malId);
+                }
+                if (entry == null) {
+                    entry = new AnimeEntry();
+                    entry.setTitle(title);
+                    entry.setStatus("watching");
+                    entry.setSource("crunchyroll");
+                    entry.setLastUpdated(LocalDateTime.now());
+                }
                 entry.setCrunchyrollId(crId);
-                entry.setMalId(malId);
-                entry.setStatus("watching");
-                entry.setSource("crunchyroll");
-                entry.setLastUpdated(LocalDateTime.now());
-                unifiedMap.put(crId, entry);
+                if (entry.getMalId() == null) {
+                    entry.setMalId(malId);
+                }
+                unifiedMap.put(unifiedKey(entry), entry);
             }
 
             // Process MAL
@@ -112,7 +140,10 @@ public class SyncService {
                 List<String> titleCandidates = extractTitleCandidates(item, title);
                 log.info("Processing MAL entry malId={} title='{}' with title candidates={}", malId, title, titleCandidates);
 
-                AnimeEntry entry = animeEntryRepository.findByMalId(malId);
+                AnimeEntry entry = unifiedMap.get(malId);
+                if (entry == null) {
+                    entry = animeEntryRepository.findByMalId(malId);
+                }
                 if (entry == null) {
                     entry = new AnimeEntry();
                     entry.setTitle(title);
@@ -129,7 +160,13 @@ public class SyncService {
                 }
 
                 if (entry.getCrunchyrollId() == null) {
-                    entry.setCrunchyrollId(crunchyrollService.findSeriesIdByTitles(titleCandidates));
+                    try {
+                        entry.setCrunchyrollId(crunchyrollService.findSeriesIdByTitles(titleCandidates));
+                    } catch (Exception e) {
+                        log.warn("Crunchyroll search failed for MAL entry malId={} title='{}': {}",
+                                malId, title, e.getMessage());
+                        logSyncResult("match", "crunchyroll", title, "failed", e.getMessage());
+                    }
                     if (entry.getCrunchyrollId() != null) {
                         log.info(
                                 "Resolved Crunchyroll content_id={} for MAL entry malId={} title='{}'",
@@ -154,16 +191,78 @@ public class SyncService {
             for (AnimeEntry entry : unifiedMap.values()) {
                 animeEntryRepository.save(entry);
                 syncToCrunchyroll(entry, crunchyrollWatchlistIds);
-                syncToMal(entry);
+                syncToMal(entry, malListIds);
             }
 
             syncWatchHistoryToMal(malList);
 
             // Log success
             logSyncResult("sync", "both", "All", "success", null);
+            log.info("Sync finished successfully");
 
         } catch (Exception e) {
+            log.error("Sync failed: {}", e.getMessage(), e);
             logSyncResult("sync", "both", "All", "failed", e.getMessage());
+        }
+    }
+
+    private String unifiedKey(AnimeEntry entry) {
+        return entry.getMalId() != null ? entry.getMalId() : "cr:" + entry.getCrunchyrollId();
+    }
+
+    /**
+     * Collapses rows that describe the same show (same MAL id or same Crunchyroll id,
+     * with no conflicting other id) into the oldest row. Earlier versions could insert
+     * the same show twice, which made every later sync fail on a non-unique lookup.
+     */
+    void mergeDuplicateEntries() {
+        List<AnimeEntry> entries = new ArrayList<>(animeEntryRepository.findAll());
+        entries.sort(Comparator.comparing(AnimeEntry::getId, Comparator.nullsLast(Comparator.naturalOrder())));
+
+        Map<String, AnimeEntry> keepersByMalId = new HashMap<>();
+        Map<String, AnimeEntry> keepersByCrunchyrollId = new HashMap<>();
+        for (AnimeEntry entry : entries) {
+            AnimeEntry keeper = null;
+            if (entry.getMalId() != null) {
+                keeper = keepersByMalId.get(entry.getMalId());
+            }
+            if (keeper == null && entry.getCrunchyrollId() != null) {
+                keeper = keepersByCrunchyrollId.get(entry.getCrunchyrollId());
+            }
+
+            if (keeper == null || !sameShow(keeper, entry)) {
+                registerKeeper(entry, keepersByMalId, keepersByCrunchyrollId);
+                continue;
+            }
+
+            if (keeper.getMalId() == null) {
+                keeper.setMalId(entry.getMalId());
+            }
+            if (keeper.getCrunchyrollId() == null) {
+                keeper.setCrunchyrollId(entry.getCrunchyrollId());
+            }
+            log.info("Merging duplicate anime entry id={} title='{}' into id={} (malId={} content_id={})",
+                    entry.getId(), entry.getTitle(), keeper.getId(), keeper.getMalId(), keeper.getCrunchyrollId());
+            animeEntryRepository.delete(entry);
+            animeEntryRepository.save(keeper);
+            registerKeeper(keeper, keepersByMalId, keepersByCrunchyrollId);
+        }
+    }
+
+    private boolean sameShow(AnimeEntry keeper, AnimeEntry entry) {
+        boolean malCompatible = keeper.getMalId() == null || entry.getMalId() == null
+                || keeper.getMalId().equals(entry.getMalId());
+        boolean crCompatible = keeper.getCrunchyrollId() == null || entry.getCrunchyrollId() == null
+                || keeper.getCrunchyrollId().equals(entry.getCrunchyrollId());
+        return malCompatible && crCompatible;
+    }
+
+    private void registerKeeper(AnimeEntry keeper, Map<String, AnimeEntry> byMalId, Map<String, AnimeEntry> byCrunchyrollId) {
+        if (keeper.getMalId() != null) {
+            byMalId.putIfAbsent(keeper.getMalId(), keeper);
+        }
+        if (keeper.getCrunchyrollId() != null) {
+            byCrunchyrollId.putIfAbsent(keeper.getCrunchyrollId(), keeper);
         }
     }
 
@@ -221,13 +320,16 @@ public class SyncService {
         }
     }
 
-    private void syncToMal(AnimeEntry entry) {
+    private void syncToMal(AnimeEntry entry, Set<String> malListIds) {
         try {
-            if (entry.getMalId() != null) {
+            // Entries already on the MAL list carry MAL's own status; pushing it back is at best a
+            // no-op and at worst overwrites e.g. "completed" with Crunchyroll's default "watching".
+            if (entry.getMalId() != null && !malListIds.contains(entry.getMalId())) {
                 malService.updateAnimeStatus(entry.getMalId(), entry.getStatus());
                 logSyncResult("update", "mal", entry.getTitle(), "success", null);
             }
         } catch (Exception e) {
+            log.warn("MAL status update failed for malId={} title='{}': {}", entry.getMalId(), entry.getTitle(), e.getMessage());
             logSyncResult("update", "mal", entry.getTitle(), "failed", e.getMessage());
         }
     }
@@ -265,7 +367,13 @@ public class SyncService {
                     candidate.seriesTitle() + " E" + candidate.episodeNumber(),
                     "accepted",
                     null);
-            processWatchHistoryCandidate(candidate, malProgressById);
+            try {
+                processWatchHistoryCandidate(candidate, malProgressById);
+            } catch (Exception e) {
+                log.warn("MAL progress sync failed for Crunchyroll series_id={} title='{}': {}",
+                        candidate.seriesId(), candidate.seriesTitle(), e.getMessage());
+                logSyncResult("progress_update", "mal", candidate.seriesTitle(), "failed", e.getMessage());
+            }
         }
 
         if (maxProcessedDate != null) {

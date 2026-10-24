@@ -5,7 +5,9 @@ import java.text.Normalizer;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -78,30 +80,113 @@ public class CrunchyrollService {
     private String accessToken;
     private String accountId;
 
+    @Autowired
+    private AuthTokenStore authTokenStore;
+
+    private static final String REFRESH_TOKEN_KEY = "crunchyrollRefreshToken";
+    private static final String ETP_RT_KEY = "crunchyrollEtpRt";
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /**
+     * Logs in to Crunchyroll, trying in order: the refresh token saved by the last
+     * successful login, the last rotated etp_rt cookie, and finally the etp_rt cookie
+     * from configuration. Whatever new refresh token or cookie Crunchyroll returns is
+     * saved so the configured cookie is only needed for the first login.
+     */
     public void authenticate() throws IOException {
-        RequestBody body = new FormBody.Builder()
-                .add("device_id", deviceId)
-                .add("device_type", deviceType)
-                .add("grant_type", "etp_rt_cookie")
-                .build();
+        String storedRefreshToken = loadStoredValue(REFRESH_TOKEN_KEY);
+        if (!isBlank(storedRefreshToken)) {
+            try {
+                requestToken(new FormBody.Builder()
+                        .add("refresh_token", storedRefreshToken)
+                        .add("grant_type", "refresh_token")
+                        .add("scope", "offline_access")
+                        .add("device_id", deviceId)
+                        .add("device_type", deviceType)
+                        .build(), null);
+                log.info("Crunchyroll login succeeded using the saved refresh token");
+                return;
+            } catch (IOException e) {
+                log.warn("Crunchyroll login with the saved refresh token failed, falling back to etp_rt cookie: {}",
+                        e.getMessage());
+            }
+        }
 
-        Request request = new Request.Builder()
+        String storedEtpRt = loadStoredValue(ETP_RT_KEY);
+        IOException lastFailure = null;
+        for (String cookie : new LinkedHashSet<>(Arrays.asList(storedEtpRt, etpRt))) {
+            if (isBlank(cookie)) {
+                continue;
+            }
+            try {
+                requestToken(new FormBody.Builder()
+                        .add("device_id", deviceId)
+                        .add("device_type", deviceType)
+                        .add("grant_type", "etp_rt_cookie")
+                        .build(), cookie);
+                log.info("Crunchyroll login succeeded using the {} etp_rt cookie",
+                        cookie.equals(storedEtpRt) ? "saved" : "configured");
+                return;
+            } catch (IOException e) {
+                log.warn("Crunchyroll login with the {} etp_rt cookie failed: {}",
+                        cookie.equals(storedEtpRt) ? "saved" : "configured", e.getMessage());
+                lastFailure = e;
+            }
+        }
+
+        throw lastFailure != null ? lastFailure : new IOException("Auth failed: no Crunchyroll etp_rt cookie is configured.");
+    }
+
+    private void requestToken(RequestBody body, String cookie) throws IOException {
+        Request.Builder builder = new Request.Builder()
                 .url(baseUrl + authUrl)
                 .addHeader("Authorization", "Basic " + clientId)
-                .addHeader("Cookie", "etp_rt=" + etpRt)
                 .addHeader("Content-Type", "application/x-www-form-urlencoded")
-                .post(body)
-                .build();
+                .post(body);
+        if (cookie != null) {
+            builder.addHeader("Cookie", "etp_rt=" + cookie);
+        }
 
-        try (Response response = okHttpClient.newCall(request).execute()) {
+        try (Response response = okHttpClient.newCall(builder.build()).execute()) {
             if (!response.isSuccessful()) throw new IOException("Auth failed: " + response);
 
             JsonNode json = objectMapper.readTree(response.body().string());
             accessToken = json.get("access_token").asText();
             accountId = json.get("account_id").asText();
+
+            persistLoginState(json.path("refresh_token").asText(null), extractEtpRtCookie(response));
         }
+    }
+
+    private void persistLoginState(String refreshToken, String rotatedEtpRt) {
+        if (authTokenStore == null) {
+            return;
+        }
+        try {
+            if (!isBlank(refreshToken)) {
+                authTokenStore.saveValue(REFRESH_TOKEN_KEY, refreshToken);
+            }
+            if (!isBlank(rotatedEtpRt)) {
+                authTokenStore.saveValue(ETP_RT_KEY, rotatedEtpRt);
+            }
+        } catch (IOException e) {
+            log.warn("Failed to save Crunchyroll login state: {}", e.getMessage());
+        }
+    }
+
+    private String extractEtpRtCookie(Response response) {
+        for (String header : response.headers("Set-Cookie")) {
+            if (header.startsWith("etp_rt=")) {
+                String value = header.substring("etp_rt=".length()).split(";", 2)[0];
+                return isBlank(value) ? null : value;
+            }
+        }
+        return null;
+    }
+
+    private String loadStoredValue(String key) {
+        return authTokenStore == null ? null : authTokenStore.loadValue(key);
     }
 
     public List<Map<String, Object>> getWatchlist() throws IOException {
