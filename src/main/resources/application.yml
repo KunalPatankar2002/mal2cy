@@ -52,7 +52,7 @@ app:
   match:
     misses-path: ./data/match-misses.json
     overrides-path: ./data/title-overrides.json
-    retry-days: 7
+    retry-days: 30
   notify:
     ntfy-url: ${NTFY_URL:https://ntfy.sh}
     ntfy-topic: ${NTFY_TOPIC:}

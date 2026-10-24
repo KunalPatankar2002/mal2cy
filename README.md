@@ -151,7 +151,7 @@ Set `NTFY_TOPIC` in `.env` to a hard-to-guess name and subscribe to the same top
 
 - Crunchyroll watchlist titles are matched against your own MAL list first (main, English and alternative titles). Jikan is only a fallback: it is throttled to about one request a second, retried on HTTP 429, and a result is only accepted when one of its titles matches.
 - MAL sequels ("2nd Season", "Season 3", "Part 2", "II", "...-hen" arcs) map to the parent Crunchyroll series, since Crunchyroll keeps every season under one series. When several MAL seasons share a series, watch history goes to the season that is `watching` on MAL. A Crunchyroll episode number above the MAL episode count is skipped.
-- Titles with no match are remembered in `./data/match-misses.json` and searched again after 7 days (`app.match.retry-days`).
+- Titles with no match are remembered in `./data/match-misses.json` and searched again after 30 days (`app.match.retry-days`).
 - Hand-written matches go in `./data/title-overrides.json` (created empty on first run):
   ```json
   { "malToCrunchyroll": { "41025": "GG5H5XMWV" }, "crunchyrollToMal": { "GT00371893": "38668" } }

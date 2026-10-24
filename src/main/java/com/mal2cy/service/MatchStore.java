@@ -45,7 +45,7 @@ public class MatchStore {
     public MatchStore(
             @Value("${app.match.misses-path:./data/match-misses.json}") String missesPath,
             @Value("${app.match.overrides-path:./data/title-overrides.json}") String overridesPath,
-            @Value("${app.match.retry-days:7}") long retryDays) {
+            @Value("${app.match.retry-days:30}") long retryDays) {
         this.missesPath = Path.of(missesPath);
         this.overridesPath = Path.of(overridesPath);
         this.retryDays = retryDays;
