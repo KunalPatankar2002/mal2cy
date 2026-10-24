@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -33,7 +34,7 @@ class CrunchyrollAuthTest {
     private final AuthTokenStore authTokenStore = mock(AuthTokenStore.class);
 
     @Test
-    void savesRefreshTokenAndRotatedCookieFromCookieLogin() throws Exception {
+    void savesRotatedCookieFromCookieLogin() throws Exception {
         when(client.newCall(any(Request.class))).thenReturn(call);
         when(call.execute()).thenReturn(response(200,
                 "{\"access_token\":\"access\",\"account_id\":\"acc\",\"refresh_token\":\"refresh-1\"}",
@@ -43,35 +44,16 @@ class CrunchyrollAuthTest {
         service.authenticate();
 
         assertEquals("access", service.getAccessToken());
-        verify(authTokenStore).saveValue("crunchyrollRefreshToken", "refresh-1");
         verify(authTokenStore).saveValue("crunchyrollEtpRt", "rotated-cookie");
+        verify(authTokenStore, never()).saveValue(eq("crunchyrollRefreshToken"), anyString());
         verify(client).newCall(argThat(request -> "etp_rt=configured-cookie".equals(request.header("Cookie"))));
     }
 
     @Test
-    void usesSavedRefreshTokenWithoutCookie() throws Exception {
-        when(authTokenStore.loadValue("crunchyrollRefreshToken")).thenReturn("refresh-1");
-        when(client.newCall(any(Request.class))).thenReturn(call);
-        when(call.execute()).thenReturn(response(200,
-                "{\"access_token\":\"access\",\"account_id\":\"acc\",\"refresh_token\":\"refresh-2\"}", null));
-
-        CrunchyrollService service = newService();
-        service.authenticate();
-
-        verify(client, times(1)).newCall(any(Request.class));
-        verify(client).newCall(argThat(request -> request.header("Cookie") == null
-                && readBody(request).contains("grant_type=refresh_token")
-                && readBody(request).contains("refresh_token=refresh-1")));
-        verify(authTokenStore).saveValue("crunchyrollRefreshToken", "refresh-2");
-    }
-
-    @Test
-    void fallsBackToSavedThenConfiguredCookieWhenRefreshTokenIsRejected() throws Exception {
-        when(authTokenStore.loadValue("crunchyrollRefreshToken")).thenReturn("expired-refresh");
+    void fallsBackToConfiguredCookieWhenSavedCookieIsRejected() throws Exception {
         when(authTokenStore.loadValue("crunchyrollEtpRt")).thenReturn("stale-saved-cookie");
         when(client.newCall(any(Request.class))).thenReturn(call);
         when(call.execute())
-                .thenReturn(response(400, "{}", null))
                 .thenReturn(response(400, "{}", null))
                 .thenReturn(response(200, "{\"access_token\":\"access\",\"account_id\":\"acc\"}", null));
 
@@ -79,6 +61,7 @@ class CrunchyrollAuthTest {
         service.authenticate();
 
         assertEquals("access", service.getAccessToken());
+        verify(client, times(2)).newCall(any(Request.class));
         verify(client).newCall(argThat(request -> "etp_rt=stale-saved-cookie".equals(request.header("Cookie"))));
         verify(client).newCall(argThat(request -> "etp_rt=configured-cookie".equals(request.header("Cookie"))));
         verify(authTokenStore, never()).saveValue(anyString(), anyString());
@@ -118,17 +101,5 @@ class CrunchyrollAuthTest {
             builder.addHeader("Set-Cookie", setCookie);
         }
         return builder.build();
-    }
-
-    private static String readBody(Request request) {
-        okio.Buffer buffer = new okio.Buffer();
-        try {
-            if (request.body() != null) {
-                request.body().writeTo(buffer);
-            }
-            return buffer.readUtf8();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

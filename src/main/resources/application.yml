@@ -33,6 +33,12 @@ app:
     device-type: Chrome on Chrome OS
     search-score-threshold: 120
     client-id: bm9haWhkZXZtXzZpeWcwYThsMHE6  # Base64 encoded
+    # Android TV app client used for the one-time activation at crunchyroll.com/activate.
+    # Unofficial; override with CRUNCHYROLL_TV_CLIENT_AUTH if Crunchyroll retires it.
+    tv-client-auth: ${CRUNCHYROLL_TV_CLIENT_AUTH:ZXI5bmdnMmtvNW9oaXJsYTUxaTI6VmwxVDBQbjhRWko2d3o0NnhYRGxIekRGUDV0Wlgxb3E=}
+    tv-user-agent: ${CRUNCHYROLL_TV_USER_AGENT:Crunchyroll/ANDROIDTV/3.76.0_22366 (Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)}
+    device-code-url: /auth/v1/device/code
+    device-token-url: /auth/v1/device/token
   mal:
     base-url: https://api.myanimelist.net/v2
     auth-url: https://myanimelist.net/v1/oauth2/authorize

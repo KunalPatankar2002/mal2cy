@@ -83,32 +83,30 @@ public class CrunchyrollService {
     @Autowired
     private AuthTokenStore authTokenStore;
 
-    private static final String REFRESH_TOKEN_KEY = "crunchyrollRefreshToken";
+    @Autowired
+    private CrunchyrollTvAuthService tvAuthService;
+
     private static final String ETP_RT_KEY = "crunchyrollEtpRt";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
-     * Logs in to Crunchyroll, trying in order: the refresh token saved by the last
-     * successful login, the last rotated etp_rt cookie, and finally the etp_rt cookie
-     * from configuration. Whatever new refresh token or cookie Crunchyroll returns is
-     * saved so the configured cookie is only needed for the first login.
+     * Logs in to Crunchyroll. Once the TV-style activation has been done, its saved
+     * refresh token is used and renewed. Otherwise (or if that fails) it falls back to
+     * the last rotated etp_rt cookie and then the etp_rt cookie from configuration. The
+     * web client id does not support the refresh_token grant, so the cookie alone
+     * cannot renew itself.
      */
     public void authenticate() throws IOException {
-        String storedRefreshToken = loadStoredValue(REFRESH_TOKEN_KEY);
-        if (!isBlank(storedRefreshToken)) {
+        if (tvAuthService != null && tvAuthService.isActivated()) {
             try {
-                requestToken(new FormBody.Builder()
-                        .add("refresh_token", storedRefreshToken)
-                        .add("grant_type", "refresh_token")
-                        .add("scope", "offline_access")
-                        .add("device_id", deviceId)
-                        .add("device_type", deviceType)
-                        .build(), null);
-                log.info("Crunchyroll login succeeded using the saved refresh token");
+                CrunchyrollTvAuthService.TokenResult result = tvAuthService.refresh();
+                accessToken = result.accessToken();
+                accountId = result.accountId();
+                log.info("Crunchyroll login succeeded using the activated TV login");
                 return;
             } catch (IOException e) {
-                log.warn("Crunchyroll login with the saved refresh token failed, falling back to etp_rt cookie: {}",
+                log.error("Crunchyroll TV login failed, falling back to etp_rt cookie. Re-activate at /auth/crunchyroll/activate: {}",
                         e.getMessage());
             }
         }
@@ -155,21 +153,16 @@ public class CrunchyrollService {
             accessToken = json.get("access_token").asText();
             accountId = json.get("account_id").asText();
 
-            persistLoginState(json.path("refresh_token").asText(null), extractEtpRtCookie(response));
+            persistRotatedCookie(extractEtpRtCookie(response));
         }
     }
 
-    private void persistLoginState(String refreshToken, String rotatedEtpRt) {
-        if (authTokenStore == null) {
+    private void persistRotatedCookie(String rotatedEtpRt) {
+        if (authTokenStore == null || isBlank(rotatedEtpRt)) {
             return;
         }
         try {
-            if (!isBlank(refreshToken)) {
-                authTokenStore.saveValue(REFRESH_TOKEN_KEY, refreshToken);
-            }
-            if (!isBlank(rotatedEtpRt)) {
-                authTokenStore.saveValue(ETP_RT_KEY, rotatedEtpRt);
-            }
+            authTokenStore.saveValue(ETP_RT_KEY, rotatedEtpRt);
         } catch (IOException e) {
             log.warn("Failed to save Crunchyroll login state: {}", e.getMessage());
         }
